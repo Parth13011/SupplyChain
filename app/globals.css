@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 0, 0, 0;
+  --background-start-rgb: 214, 219, 220;
+  --background-end-rgb: 255, 255, 255;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --foreground-rgb: 0, 0, 0;
+    --background-start-rgb: 214, 219, 220;
+    --background-end-rgb: 255, 255, 255;
+  }
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+      to bottom,
+      transparent,
+      rgb(var(--background-end-rgb))
+    )
+    rgb(var(--background-start-rgb));
+  font-size: 16px;
+}
+
+/* Improve text readability */
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Ensure good contrast for all text */
+.text-gray-600 {
+  color: #4b5563 !important;
+}
+
+.text-gray-500 {
+  color: #6b7280 !important;
+}
+
+.text-gray-700 {
+  color: #374151 !important;
+}
+
+/* Make sure small text is readable */
+.text-sm {
+  font-size: 0.95rem !important;
+  line-height: 1.5 !important;
+}
+
+.text-xs {
+  font-size: 0.875rem !important;
+  line-height: 1.4 !important;
+}
+
