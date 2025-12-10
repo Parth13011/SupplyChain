@@ -177,9 +177,32 @@ npm run build
 npm start
 ```
 
-## IPFS Integration (Future)
+## IPFS Integration
 
-The system is designed to support IPFS for storing product metadata. You can store IPFS hashes in the `metadata` field when creating products.
+The system fully supports IPFS for storing product metadata, images, and documents. 
+
+### Features:
+- **Automatic File Upload**: Upload product images, PDFs, and documents directly from the Manufacturer Dashboard
+- **Drag & Drop Interface**: Easy-to-use drag-and-drop file upload with progress indicators
+- **IPFS Metadata Storage**: Automatically creates and stores structured metadata on IPFS
+- **Image Display**: Product images stored on IPFS are automatically displayed in the product list
+- **Manual IPFS Hash Entry**: You can still manually enter IPFS hashes or JSON metadata if needed
+
+### How to Use:
+1. When creating a product, use the file upload area to select images or documents
+2. Files are automatically uploaded to IPFS (you'll see upload progress)
+3. Metadata is automatically generated and stored on IPFS
+4. The IPFS hash is stored in the product's metadata field on the blockchain
+5. Images are automatically displayed when viewing products
+
+### IPFS Configuration:
+The system uses the DIDLab IPFS gateway by default. You can configure it via environment variables:
+```env
+NEXT_PUBLIC_IPFS_GATEWAY=https://ipfs.didlab.org
+NEXT_PUBLIC_IPFS_API=https://ipfs.didlab.org/api/v0
+```
+
+For more details, see [IPFS_DEPLOYMENT.md](./IPFS_DEPLOYMENT.md)
 
 ## Notes
 

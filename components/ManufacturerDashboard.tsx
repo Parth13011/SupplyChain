@@ -1,12 +1,21 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { getProvider, isOnCorrectNetwork, ensureNetwork } from '@/lib/web3';
 import { getProductRegistryContract, getSupplyChainContract } from '@/lib/contracts';
+import { uploadFileToIPFS, uploadMetadataToIPFS, getIPFSGatewayURL, formatIPFSHash } from '@/lib/ipfs';
 import ProductQRCode from './ProductQRCode';
 
 interface ManufacturerDashboardProps {
   address: string;
+}
+
+interface UploadedFile {
+  file: File;
+  cid: string | null;
+  preview?: string;
+  uploading: boolean;
+  progress: number;
 }
 
 export default function ManufacturerDashboard({ address }: ManufacturerDashboardProps) {
@@ -20,6 +29,9 @@ export default function ManufacturerDashboard({ address }: ManufacturerDashboard
   const [roleVerified, setRoleVerified] = useState<boolean | null>(null);
   const [newlyCreatedProductId, setNewlyCreatedProductId] = useState<number | null>(null);
   const [showQRCodeForProduct, setShowQRCodeForProduct] = useState<number | null>(null);
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     verifyRole();
@@ -48,6 +60,48 @@ export default function ManufacturerDashboard({ address }: ManufacturerDashboard
     }
   };
 
+  // Helper function to parse IPFS metadata and extract image URLs
+  const parseIPFSMetadata = (metadata: string) => {
+    if (!metadata) return null;
+    
+    try {
+      // Check if it's an IPFS hash (starts with ipfs://)
+      if (metadata.startsWith('ipfs://')) {
+        const cid = metadata.replace('ipfs://', '');
+        // Try to fetch and parse the metadata
+        // For now, return the gateway URL
+        return {
+          cid,
+          gatewayUrl: getIPFSGatewayURL(cid),
+          files: [],
+        };
+      }
+      
+      // Try to parse as JSON
+      const parsed = JSON.parse(metadata);
+      if (parsed.files && Array.isArray(parsed.files)) {
+        const imageFiles = parsed.files.filter((f: any) => f.type?.startsWith('image/'));
+        return {
+          files: parsed.files,
+          images: imageFiles.map((f: any) => f.url || getIPFSGatewayURL(f.cid)),
+          metadata: parsed,
+        };
+      }
+      
+      return null;
+    } catch {
+      // Not JSON, might be a plain IPFS hash
+      if (metadata.length > 20 && !metadata.includes(' ')) {
+        return {
+          cid: metadata,
+          gatewayUrl: getIPFSGatewayURL(metadata),
+          files: [],
+        };
+      }
+      return null;
+    }
+  };
+
   const loadProducts = async () => {
     try {
       const provider = getProvider();
@@ -69,11 +123,13 @@ export default function ManufacturerDashboard({ address }: ManufacturerDashboard
         productIds.map(async (id: bigint) => {
           try {
             const product = await productRegistry.getProduct(id);
+            const ipfsData = parseIPFSMetadata(product.metadata);
             return {
               id: Number(id),
               name: product.name,
               description: product.description,
               metadata: product.metadata,
+              ipfsData,
               createdAt: new Date(Number(product.createdAt) * 1000).toLocaleString(),
             };
           } catch (error) {
@@ -94,6 +150,89 @@ export default function ManufacturerDashboard({ address }: ManufacturerDashboard
     }
   };
 
+  // Handle file selection
+  const handleFileSelect = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    const newFiles: UploadedFile[] = Array.from(files).map(file => ({
+      file,
+      cid: null,
+      preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
+      uploading: false,
+      progress: 0,
+    }));
+
+    setUploadedFiles(prev => [...prev, ...newFiles]);
+  };
+
+  // Handle drag and drop
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    handleFileSelect(e.dataTransfer.files);
+  };
+
+  // Upload file to IPFS
+  const uploadFile = async (index: number) => {
+    const fileToUpload = uploadedFiles[index];
+    if (!fileToUpload || fileToUpload.cid) return; // Already uploaded
+
+    setUploadedFiles(prev => prev.map((f, i) => 
+      i === index ? { ...f, uploading: true, progress: 0 } : f
+    ));
+
+    try {
+      const cid = await uploadFileToIPFS(
+        fileToUpload.file,
+        (progress) => {
+          setUploadedFiles(prev => prev.map((f, i) => 
+            i === index ? { ...f, progress } : f
+          ));
+        }
+      );
+
+      setUploadedFiles(prev => prev.map((f, i) => 
+        i === index ? { ...f, cid, uploading: false, progress: 100 } : f
+      ));
+    } catch (error: any) {
+      console.error('Upload error:', error);
+      setUploadedFiles(prev => prev.map((f, i) => 
+        i === index ? { ...f, uploading: false } : f
+      ));
+      setMessage(`Error uploading file: ${error.message || 'Unknown error'}`);
+    }
+  };
+
+  // Upload all files to IPFS
+  const uploadAllFiles = async () => {
+    for (let i = 0; i < uploadedFiles.length; i++) {
+      if (!uploadedFiles[i].cid && !uploadedFiles[i].uploading) {
+        await uploadFile(i);
+      }
+    }
+  };
+
+  // Remove file from list
+  const removeFile = (index: number) => {
+    setUploadedFiles(prev => {
+      const file = prev[index];
+      if (file.preview) {
+        URL.revokeObjectURL(file.preview);
+      }
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
   const handleCreateProduct = async () => {
     if (!productName || !productDescription) {
       setMessage('Please fill in product name and description');
@@ -104,6 +243,51 @@ export default function ManufacturerDashboard({ address }: ManufacturerDashboard
     setMessage('');
 
     try {
+      // First, upload all files to IPFS if not already uploaded
+      const filesToUpload = uploadedFiles.filter(f => !f.cid && !f.uploading);
+      if (filesToUpload.length > 0) {
+        setMessage('Uploading files to IPFS...');
+        await uploadAllFiles();
+      }
+
+      // Build metadata object with file information
+      let finalMetadata = productMetadata;
+      const uploadedCids = uploadedFiles
+        .filter(f => f.cid)
+        .map(f => ({
+          name: f.file.name,
+          type: f.file.type,
+          size: f.file.size,
+          cid: f.cid!,
+          url: getIPFSGatewayURL(f.cid!),
+        }));
+
+      if (uploadedCids.length > 0) {
+        const metadataObj: any = {};
+        
+        // If user provided JSON metadata, try to parse it
+        if (productMetadata.trim()) {
+          try {
+            const parsed = JSON.parse(productMetadata);
+            Object.assign(metadataObj, parsed);
+          } catch {
+            // If not JSON, add it as a text field
+            metadataObj.customMetadata = productMetadata;
+          }
+        }
+        
+        metadataObj.files = uploadedCids;
+        
+        // Upload metadata to IPFS if we have files
+        if (uploadedCids.length > 0) {
+          setMessage('Uploading metadata to IPFS...');
+          const metadataCid = await uploadMetadataToIPFS(metadataObj);
+          finalMetadata = `ipfs://${metadataCid}`;
+        } else {
+          finalMetadata = JSON.stringify(metadataObj);
+        }
+      }
+
       const provider = getProvider();
       if (!provider) throw new Error('Provider not found');
 
@@ -169,7 +353,7 @@ export default function ManufacturerDashboard({ address }: ManufacturerDashboard
         await productRegistry.createProduct.estimateGas(
           productName,
           productDescription,
-          productMetadata || ''
+          finalMetadata || ''
         );
       } catch (estimateError: any) {
         // Try to extract revert reason
@@ -193,10 +377,11 @@ export default function ManufacturerDashboard({ address }: ManufacturerDashboard
         return;
       }
 
+      setMessage('Creating product on blockchain...');
       const tx = await productRegistry.createProduct(
         productName,
         productDescription,
-        productMetadata || ''
+        finalMetadata || ''
       );
       
       console.log('Product creation transaction:', tx.hash);
@@ -228,6 +413,7 @@ export default function ManufacturerDashboard({ address }: ManufacturerDashboard
       setProductName('');
       setProductDescription('');
       setProductMetadata('');
+      setUploadedFiles([]); // Clear uploaded files
       
       // Reload products after a short delay to ensure blockchain state is updated
       setTimeout(() => {
@@ -261,6 +447,8 @@ export default function ManufacturerDashboard({ address }: ManufacturerDashboard
           errorMessage = 'Error: Insufficient funds for gas. Please add more ETH to your account.';
         } else if (error.message.includes('nonce') || error.message.includes('replacement')) {
           errorMessage = 'Error: Transaction nonce issue. Please wait a moment and try again.';
+        } else if (error.message.includes('IPFS') || error.message.includes('Failed to upload')) {
+          errorMessage = `IPFS Upload Error: ${error.message}`;
         }
       } else if (error.reason) {
         errorMessage = error.reason;
@@ -383,17 +571,145 @@ export default function ManufacturerDashboard({ address }: ManufacturerDashboard
               />
             </div>
 
+            {/* File Upload Section */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Metadata (Optional - IPFS hash or JSON)
+                Product Files (Optional - Images, Documents, etc.)
               </label>
-              <input
-                type="text"
+              
+              {/* Drag and Drop Area */}
+              <div
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-all ${
+                  isDragging
+                    ? 'border-indigo-500 bg-indigo-50'
+                    : 'border-gray-300 hover:border-indigo-400 hover:bg-gray-50'
+                }`}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  onChange={(e) => handleFileSelect(e.target.files)}
+                  className="hidden"
+                  accept="image/*,.pdf,.doc,.docx,.txt"
+                />
+                <div className="space-y-2">
+                  <div className="text-4xl">📎</div>
+                  <p className="text-sm font-medium text-gray-700">
+                    {isDragging ? 'Drop files here' : 'Click to upload or drag and drop'}
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    Images, PDFs, Documents (Files will be uploaded to IPFS)
+                  </p>
+                </div>
+              </div>
+
+              {/* Uploaded Files List */}
+              {uploadedFiles.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  {uploadedFiles.map((uploadedFile, index) => (
+                    <div
+                      key={index}
+                      className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200"
+                    >
+                      {/* Preview for images */}
+                      {uploadedFile.preview && (
+                        <img
+                          src={uploadedFile.preview}
+                          alt={uploadedFile.file.name}
+                          className="w-12 h-12 object-cover rounded"
+                        />
+                      )}
+                      {!uploadedFile.preview && (
+                        <div className="w-12 h-12 bg-gray-200 rounded flex items-center justify-center text-2xl">
+                          📄
+                        </div>
+                      )}
+                      
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-700 truncate">
+                          {uploadedFile.file.name}
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          {(uploadedFile.file.size / 1024).toFixed(2)} KB
+                        </p>
+                        {uploadedFile.uploading && (
+                          <div className="mt-1">
+                            <div className="w-full bg-gray-200 rounded-full h-1.5">
+                              <div
+                                className="bg-indigo-600 h-1.5 rounded-full transition-all"
+                                style={{ width: `${uploadedFile.progress}%` }}
+                              />
+                            </div>
+                            <p className="text-xs text-gray-500 mt-1">
+                              Uploading... {uploadedFile.progress}%
+                            </p>
+                          </div>
+                        )}
+                        {uploadedFile.cid && (
+                          <p className="text-xs text-indigo-600 mt-1 font-mono">
+                            IPFS: {formatIPFSHash(uploadedFile.cid)}
+                          </p>
+                        )}
+                      </div>
+                      
+                      <div className="flex gap-2">
+                        {!uploadedFile.cid && !uploadedFile.uploading && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              uploadFile(index);
+                            }}
+                            className="px-3 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700"
+                          >
+                            Upload
+                          </button>
+                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeFile(index);
+                          }}
+                          className="px-3 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  
+                  {/* Upload All Button */}
+                  {uploadedFiles.some(f => !f.cid && !f.uploading) && (
+                    <button
+                      onClick={uploadAllFiles}
+                      className="w-full mt-2 px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700"
+                    >
+                      Upload All Files to IPFS
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Metadata Input (for manual IPFS hash or JSON) */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Additional Metadata (Optional - JSON or IPFS hash)
+              </label>
+              <textarea
                 value={productMetadata}
                 onChange={(e) => setProductMetadata(e.target.value)}
-                placeholder="IPFS hash or additional metadata"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                placeholder='{"key": "value"} or IPFS hash'
+                rows={2}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm font-mono"
               />
+              <p className="text-xs text-gray-500 mt-1">
+                If files are uploaded above, this will be merged with file metadata. Otherwise, enter JSON or IPFS hash manually.
+              </p>
             </div>
 
             <button
@@ -426,15 +742,60 @@ export default function ManufacturerDashboard({ address }: ManufacturerDashboard
                   <div className="flex justify-between items-start gap-4">
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-2">
-                        <span className="text-2xl">📦</span>
+                        {/* Show IPFS image if available */}
+                        {product.ipfsData?.images && product.ipfsData.images.length > 0 ? (
+                          <img
+                            src={product.ipfsData.images[0]}
+                            alt={product.name}
+                            className="w-16 h-16 object-cover rounded-lg border-2 border-gray-300"
+                            onError={(e) => {
+                              // Fallback to emoji if image fails to load
+                              e.currentTarget.style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          <span className="text-2xl">📦</span>
+                        )}
                         <div>
                           <h4 className="font-bold text-lg text-gray-900">Product #{product.id}</h4>
                           <p className="text-gray-700 font-medium">{product.name}</p>
                         </div>
                       </div>
                       <p className="text-sm text-gray-600 mb-2">{product.description}</p>
+                      
+                      {/* Show IPFS metadata info */}
+                      {product.ipfsData && (
+                        <div className="mb-2">
+                          {product.ipfsData.images && product.ipfsData.images.length > 0 && (
+                            <div className="flex gap-2 mb-2">
+                              {product.ipfsData.images.slice(0, 3).map((imgUrl: string, idx: number) => (
+                                <img
+                                  key={idx}
+                                  src={imgUrl}
+                                  alt={`${product.name} - Image ${idx + 1}`}
+                                  className="w-20 h-20 object-cover rounded border border-gray-300"
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = 'none';
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          )}
+                          {product.ipfsData.files && product.ipfsData.files.length > 0 && (
+                            <p className="text-xs text-indigo-600">
+                              📎 {product.ipfsData.files.length} file(s) stored on IPFS
+                            </p>
+                          )}
+                        </div>
+                      )}
+                      
                       <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span>📅 {product.createdAt}</span>
+                        {product.ipfsData?.cid && (
+                          <span className="font-mono text-indigo-600">
+                            IPFS: {formatIPFSHash(product.ipfsData.cid)}
+                          </span>
+                        )}
                       </div>
                     </div>
                     <div className="flex flex-col gap-2 min-w-[280px]">
